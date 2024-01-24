@@ -57,4 +57,4 @@ if __name__ == "__main__":
     StartAnalysis(input_file='../TestFiles/TestFIle.csv',output_file='../Results/TestResult.csv')
 
     # 进行单条处理时使用
-    # SentimentAnalysis('这里是一个示例')
+    # print(SentimentAnalysis('这里是一个示例'))
