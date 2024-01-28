@@ -11,7 +11,7 @@ Key与App Secret。
 
 您需要正确安装运行脚本所需的包。如果您使用的是Pycharm，则您在加载本项目时应当会有提示进行自动安装，否则，您需要手动安装，您可以在终端中分别运行下面的代码来安装：
 
-```
+```jupyterpython
 pip install aliyun-python-sdk-alinlp
 pip install tqdm
 pip install baidu-aip
@@ -24,14 +24,14 @@ pip install chardet
 
 如果您没有将**阿里云**App Key和App Secret添加至环境变量，则将下面的内容：
 
-```
+```jupyterpython
 access_key_id = os.environ[`NLP_AK_ENV`]
 access_key_secret = os.environ[`NLP_SK_ENV`]
 ```
 
 修改为：
 
-```
+```jupyterpython
 access_key_id = `这里替换为你获得的AppKey`
 access_key_secret = `这里替换为你获得的AppSecret`
 ```
@@ -39,7 +39,7 @@ access_key_secret = `这里替换为你获得的AppSecret`
 ### 使用百度云的情感分析配置
 
 请在`Scripts`文件夹下`main.py`文件中找到下面的代码处
-```
+```jupyterpython
 # 这里为百度开放平台填写处
 APP_ID = `输入APP_ID`
 API_KEY = `输入API_KEY`
