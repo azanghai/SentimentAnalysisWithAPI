@@ -57,6 +57,7 @@ def StartAnalysis(input_file, output_file, colnum=1):
 
             # 写入处理后的数据到新文件
             writer.writerow(updated_row)
+            # 是如果遇到并发限制的问题，则启用下面的代码
             # time.sleep(0.1)
 
 
