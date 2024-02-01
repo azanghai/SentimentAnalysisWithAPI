@@ -1,6 +1,10 @@
 # 使用API服务进行情感分析
 
-目前，该脚本可以使用[阿里云]((https://help.aliyun.com/document_detail/179345.html))与[百度开放平台](https://ai.baidu.com/tech/nlp_apply/sentiment_classify)进行批量或单独的情感分析。相较于自行撰写代码使用API进行情感分析，该脚本提供了一个开箱即用（进行简单配置），进行批量情感分析的工具。
+> 2024.2.1更新：增加了处理emoji表情的能力；百度平台改用UTF-8编码
+> 2024.1.28更新：增加了百度开放平台的识别，准确率更高
+
+
+目前，该脚本可以使用[阿里云](https://help.aliyun.com/document_detail/179345.html)与[百度开放平台](https://ai.baidu.com/tech/nlp_apply/sentiment_classify)进行批量或单独的情感分析。相较于自行撰写代码使用API进行情感分析，该脚本提供了一个开箱即用（进行简单配置），进行批量情感分析的工具。
 
 ## 在开始之前
 
@@ -59,13 +63,16 @@ SECRET_KEY = `输入SECRET_KEY`
 ### StartAnalysis函数
 
 `StartAnalysis()`
-函数包含五个参数，分别为：
+函数包含六个参数，分别为：
 
  - `input_file`即传入的CSV文件路径和文件名。默认分析文件为`TestFiles`文件夹下的`TestFile.csv`（包含20条不同情感的文本）。在运行代码时，如无特殊需要，可以直接修改并保存`TestFile.csv`的内容并直接运行，分析结果将会被保存至下一个参数指定的地址。
  - `output_file`即分析结果的输出地址。在代码中默认保存在`Results`文件夹下的`TestResult.csv`文件。如果您不为保存分析结果的文件改名，则每次会覆写之前的内容；
  - `colnum` 用于指定数据所在传入文件的哪一列，默认为第一列，即int类型的数字1；
  - `Ali`是否阿里云进行分析，默认为启用（`True`）。如不使用可以修改为`False`；
  - `Baidu`是否使用百度开放平台进行分析，默认为启用（`True`）。如不使用可以修改为`False`。由于百度的并发限制较严格（QPS为2），使用百度进行分析时会较慢，约0.6s/条
+ - `emojitreat` 如何对文本内部的emoji表情进行处理，默认有三种参数
+   - 'replace'：即按照`emoji`包中的映射表将emoji表情映射为对应的中文。默认为此选项。
+   - 'delete'：即在文本中删除`emoji`表情
 
 **请注意**
 

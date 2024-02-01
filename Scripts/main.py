@@ -11,6 +11,8 @@ from aliyunsdkcore.acs_exception.exceptions import ServerException
 
 from aip import AipNlp
 
+import  emoji
+
 # 这里在使用时将等号右边的内容全部删除，并改为由英文引号""包围的key和secret
 # 这里为阿里云填写处
 access_key_id = os.environ['NLP_AK_ENV']
@@ -31,8 +33,15 @@ clientBaidu = AipNlp(APP_ID, API_KEY, SECRET_KEY)
 
 
 # 这里的函数可以用于处理单条或者错误
-def SentimentAnalysisAli(text):
+def SentimentAnalysisAli(text,emojitreat):
     request = GetSaChGeneralRequest.GetSaChGeneralRequest()
+    # 添加emoji表情处理方式，使用emoji python包
+    if emojitreat == 'replace':
+        text = emoji.replace_emoji(string=text, replace=lambda chars, data_dict: data_dict['zh'])
+    elif emojitreat == 'delete':
+        text = emoji.replace_emoji(string=text, replace='')
+    else:
+        print('可能的emoji处理方式拼写错误')
     request.set_Text(text)
     request.set_ServiceCode("alinlp")
     response = clientAli.do_action_with_exception(request)
@@ -40,13 +49,22 @@ def SentimentAnalysisAli(text):
     return resp_obj
 
 
-def SentimentAnalysisBaidu(text):
-    resp_obj = clientBaidu.sentimentClassify(text.lstrip('\ufeff').encode('gbk').decode('gbk'))
+def SentimentAnalysisBaidu(text,emojitreat):
+    # 添加emoji表情处理方式，使用emoji python包
+    if emojitreat == 'replace':
+        text = emoji.replace_emoji(string=text, replace=lambda chars, data_dict: data_dict['zh'])
+    elif emojitreat == 'delete':
+        text = emoji.replace_emoji(string=text, replace='')
+    else:
+        print('可能的emoji处理方式拼写错误')
+    processed_text = text.lstrip('\ufeff').replace(':', '')
+    gbk_encoded_text = processed_text.encode('utf-8').decode('utf-8')
+    resp_obj = clientBaidu.sentimentClassify(gbk_encoded_text)
     return resp_obj
 
 
 # 这里提供了整体处理
-def StartAnalysis(input_file, output_file, colnum=1, Ali=True, Baidu=True):
+def StartAnalysis(input_file, output_file, colnum=1, Ali=True, Baidu=True,emojitreat='replace'):
     colnum = int(colnum)
     with open(input_file, 'r', encoding='utf-8') as infile, open(output_file, 'w', newline='',
                                                                  encoding='utf-8') as outfile:
@@ -60,8 +78,8 @@ def StartAnalysis(input_file, output_file, colnum=1, Ali=True, Baidu=True):
                  'BaiduSentiment', 'BaiduConfidence', 'BaiduPositive_prob', 'BaiduNegative_prob', 'BaiduLogid'])
             for row in tqdm(reader, desc="Processing"):
                 text = row[colnum - 1]  # 假设文本在第一列
-                resultAli = SentimentAnalysisAli(text)
-                resultBaidu = SentimentAnalysisBaidu(text)
+                resultAli = SentimentAnalysisAli(text,emojitreat)
+                resultBaidu = SentimentAnalysisBaidu(text,emojitreat)
                 # 百度QPS为2,需要缓一下
                 time.sleep(0.6)
                 # 对于阿里进行提取
@@ -99,7 +117,7 @@ def StartAnalysis(input_file, output_file, colnum=1, Ali=True, Baidu=True):
                 ['text', 'AliSentiment', 'AliPositive_prob', 'AliNeutral_prob', 'AliNegative_prob', 'AliRequestId'])
             for row in tqdm(reader, desc="Processing"):
                 text = row[colnum - 1]  # 假设文本在第一列
-                resultAli = SentimentAnalysisAli(text)
+                resultAli = SentimentAnalysisAli(text,emojitreat)
                 # 如果提示并发限制则开启下面的代码
                 # time.sleep(0.6)
                 # 对于阿里进行提取
@@ -119,7 +137,7 @@ def StartAnalysis(input_file, output_file, colnum=1, Ali=True, Baidu=True):
                 ['text', 'BaiduSentiment', 'BaiduConfidence', 'BaiduPositive_prob', 'BaiduNegative_prob', 'BaiduLogid'])
             for row in tqdm(reader, desc="Processing"):
                 text = row[colnum - 1]  # 假设文本在第一列
-                resultBaidu = SentimentAnalysisBaidu(text)
+                resultBaidu = SentimentAnalysisBaidu(text,emojitreat)
                 # 百度QPS为2,需要缓一下
                 time.sleep(0.6)
                 # 进行占位以对其结果
@@ -151,8 +169,8 @@ def StartAnalysis(input_file, output_file, colnum=1, Ali=True, Baidu=True):
 if __name__ == "__main__":
     # 进行整体处理时使用下面这条函数
     StartAnalysis(input_file='../TestFiles/TestFIle.csv', output_file='../Results/TestResult.csv', colnum=1, Ali=True,
-                  Baidu=True)
+                  Baidu=True,emojitreat='replace')
 
     # 进行单条处理时使用
-    # print(SentimentAnalysisAli('这里是一个示例'))
-    # print(SentimentAnalysisBaidu('这里是一个示例'))
+    # print(SentimentAnalysisAli(text='这是一个测试样例',emojitreat='replace'))
+    # print(SentimentAnalysisBaidu(text='这是一个测试样例',emojitreat='replace'))

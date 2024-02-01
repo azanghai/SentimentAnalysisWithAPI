@@ -2,3 +2,4 @@ aliyun-python-sdk-alinlp
 tqdm
 baidu-aip
 chardet
+emoji
