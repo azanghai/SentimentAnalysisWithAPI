@@ -19,9 +19,9 @@
 
 首先，您需要根据想使用的服务获取对应的密钥：
 
-**阿里云**：`Access Key ID` 和 `Access Key Secret`
-**百度**：`APP_ID`、`API_KEY` 和 `SECRET_KEY`
-**GenAI**：兼容 `OpenAI` 接口的 `API Key` 和 `Base URL`（如 `AiHubMix`、`OpenAI` 官方等）
+**阿里云**：`Access Key ID` 和 `Access Key Secret`  
+**百度**：`APP_ID`、`API_KEY` 和 `SECRET_KEY`  
+**GenAI**：兼容 `OpenAI` 接口的 `API Key` 和 `Base URL`（如 `AiHubMix`、`OpenAI` 官方等）  
 **好消息是** 如果您是 _杨老师课题组_ 的成员或 _杨老师_ 的学生，请您联络组会群中头像为一只大象在白色背景中的成员，或者直接联络杨老师获取配置的密钥。
 
 该脚本的撰写和测试使用 `Python 3.10` 版本。
