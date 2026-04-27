@@ -1,0 +1,2 @@
+# exclude the config file that contains sensitive information
+config.py

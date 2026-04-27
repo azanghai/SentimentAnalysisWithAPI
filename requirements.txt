@@ -1,5 +1,6 @@
 aliyun-python-sdk-alinlp
-tqdm
+tqdm~=4.67.3
 baidu-aip
 chardet
-emoji
+emoji~=2.15.0
+requests~=2.33.1
