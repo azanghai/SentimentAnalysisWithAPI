@@ -454,7 +454,7 @@ if __name__ == "__main__":
         emojitreat='replace',
         has_header=True,
         genai_models=['gpt-4o-mini', 'gpt-5.4-mini', 'deepseek-v4-flash'],
-        genai_prompt={'gpt-40-mini':prompt_1, 'gpt-5.4-mini':prompt_2, 'deepseek-v4-flash':prompt_3},
+        genai_prompt={'gpt-4o-mini':prompt_1, 'gpt-5.4-mini':prompt_2, 'deepseek-v4-flash':prompt_3},
         genai_sleep=0.2
     )
     # 输出列: ...原表列... | Ali列 | Baidu列 | GenAI_gpt4omini_Sentiment | GenAI_gpt4omini_Model | GenAI_claudesonnet420250514_Sentiment | GenAI_claudesonnet420250514_Model | GenAI_deepseekchat_Sentiment | GenAI_deepseekchat_Model
