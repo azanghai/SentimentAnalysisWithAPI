@@ -198,13 +198,6 @@ def _extract_baidu_result(resultBaidu):
 
 
 def _extract_genai_result(resultGenAI, label):
-    """
-    提取 GenAI 结果。
-
-    参数:
-        resultGenAI: GenAI 返回的 dict
-        label:       列名前缀，如 'GenAI_1', 'GenAI_2'
-    """
     headers = [f'{label}_Sentiment', f'{label}_Model']
     if resultGenAI.get("success"):
         values = [resultGenAI['sentiment'], resultGenAI['model']]
@@ -216,27 +209,12 @@ def _extract_genai_result(resultGenAI, label):
 
 # ==================== 模型标签生成工具 ====================
 def _make_model_label(model_name, index):
-    """
-    根据模型名称生成简短列名前缀。
-
-    示例:
-        'gpt-4o-mini'         → 'GenAI_gpt4omini'
-        'claude-sonnet-4-20250514' → 'GenAI_claudesonnet420250514'
-
-    如果多个模型简化后冲突，则加上序号后缀。
-    """
     short = model_name.replace('-', '').replace('.', '').replace('/', '_')
     return f"GenAI_{short}"
 
 
 def _build_genai_labels(models_list):
-    """
-    为模型列表生成不重复的标签。
-    返回: [(model_name, label), ...]
-    """
     raw_labels = [_make_model_label(m, i) for i, m in enumerate(models_list)]
-
-    # 检测冲突：如果有重复标签则加 _1, _2 后缀
     from collections import Counter
     counts = Counter(raw_labels)
     seen = {}
@@ -253,16 +231,8 @@ def _build_genai_labels(models_list):
 
 # ==================== 解析 genai_prompt 参数 ====================
 def _resolve_prompt(genai_prompt, model_name):
-    """
-    根据 genai_prompt 的类型，解析出当前模型应使用的 prompt。
-
-    genai_prompt 支持三种写法:
-        None           → 使用默认 prompt
-        str            → 所有模型共用这一个 prompt
-        dict           → 按模型名映射，未命中则用默认
-    """
     if genai_prompt is None:
-        return None  # SentimentAnalysisGenAI 内部会 fallback 到默认
+        return None
     elif isinstance(genai_prompt, str):
         return genai_prompt
     elif isinstance(genai_prompt, dict):
@@ -276,41 +246,48 @@ def StartAnalysis(input_file, output_file, colnum=1,
                   Ali=True, Baidu=True, GenAI=False,
                   emojitreat='replace',
                   has_header=True,
-                  # ---- GenAI 参数（支持多模型）----
+                  resume=True,                                      # <== 新增参数
                   genai_models='gpt-4o-mini',
                   genai_prompt=None,
                   genai_api_key=None,
                   genai_base_url=None,
                   genai_sleep=0.5):
     """
-    整体情感分析处理，在原表所有列的基础上追加分析结果列。
+        整体情感分析处理，在原表所有列的基础上追加分析结果列。
+        每处理完一行立即写入并刷盘；支持断点续传，中途中断后重新运行即可自动接续。
+        新增参数:
+        resume:  是否启用断点续传 (默认 True)
+                 - True:  若输出文件已存在，自动跳过已完成行，追加写入
+                 - False: 忽略已有输出文件，从头覆盖重新分析
+                 注意：续传要求分析配置（平台选择、模型列表等）与上次一致，
+                       若配置变更导致列数不匹配，会自动回退到从头开始。
+        参数:
+            input_file:     输入 CSV 文件路径
+            output_file:    输出 CSV 文件路径
+            colnum:         文本所在列号 (从1开始)
+            Ali:            是否使用阿里云
+            Baidu:          是否使用百度
+            GenAI:          是否使用 GenAI
+            emojitreat:     emoji 处理方式 ('replace' / 'delete')
+            has_header:     输入文件是否包含表头行 (True/False)
 
-    参数:
-        input_file:     输入 CSV 文件路径
-        output_file:    输出 CSV 文件路径
-        colnum:         文本所在列号 (从1开始)
-        Ali:            是否使用阿里云
-        Baidu:          是否使用百度
-        GenAI:          是否使用 GenAI
-        emojitreat:     emoji 处理方式 ('replace' / 'delete')
-        has_header:     输入文件是否包含表头行 (True/False)
+            genai_models:   GenAI 模型，支持三种写法:
+                              - 单个字符串:  'gpt-4o-mini'
+                              - 多个模型列表: ['gpt-4o-mini', 'claude-sonnet-4-20250514', 'deepseek-chat']
+                            （旧参数名 genai_model 仍兼容，见下方）
 
-        genai_models:   GenAI 模型，支持三种写法:
-                          - 单个字符串:  'gpt-4o-mini'
-                          - 多个模型列表: ['gpt-4o-mini', 'claude-sonnet-4-20250514', 'deepseek-chat']
-                        （旧参数名 genai_model 仍兼容，见下方）
+            genai_prompt:   GenAI prompt，支持三种写法:
+                              - None:  所有模型使用默认 prompt
+                              - str:   所有模型共用同一个自定义 prompt
+                              - dict:  按模型名指定不同 prompt
+                                       {'gpt-4o-mini': prompt_a, 'deepseek-chat': prompt_b}
+                                       未指定的模型使用默认 prompt
 
-        genai_prompt:   GenAI prompt，支持三种写法:
-                          - None:  所有模型使用默认 prompt
-                          - str:   所有模型共用同一个自定义 prompt
-                          - dict:  按模型名指定不同 prompt
-                                   {'gpt-4o-mini': prompt_a, 'deepseek-chat': prompt_b}
-                                   未指定的模型使用默认 prompt
+            genai_api_key:  API Key，默认使用 config.py 中的 AIHUBMIX_API_KEY
+            genai_base_url: API 地址，默认使用 config.py 中的 AIHUBMIX_BASE_URL
+            genai_sleep:    每次 GenAI 请求后的等待时间(秒)，防止速率限制
+        """
 
-        genai_api_key:  API Key，默认使用 config.py 中的 AIHUBMIX_API_KEY
-        genai_base_url: API 地址，默认使用 config.py 中的 AIHUBMIX_BASE_URL
-        genai_sleep:    每次 GenAI 请求后的等待时间(秒)，防止速率限制
-    """
     colnum = int(colnum)
 
     if not (Ali or Baidu or GenAI):
@@ -325,8 +302,7 @@ def StartAnalysis(input_file, output_file, colnum=1,
     else:
         models_list = [str(genai_models)]
 
-    # 为每个模型生成列名标签
-    model_labels = _build_genai_labels(models_list)  # [(model_name, label), ...]
+    model_labels = _build_genai_labels(models_list)
 
     # ---- 构建需要追加的新列表头 ----
     new_headers = []
@@ -340,12 +316,68 @@ def StartAnalysis(input_file, output_file, colnum=1,
         for model_name, label in model_labels:
             new_headers.extend([f'{label}_Sentiment', f'{label}_Model'])
 
+    # ======================================================================
+    #  计算输入文件总数据行数（用 csv.reader 正确处理含换行的字段）        <== 新增
+    # ======================================================================
+    with open(input_file, 'r', encoding='utf-8') as f:
+        total_input_lines = sum(1 for _ in csv.reader(f))
+    total_data_rows = total_input_lines - (1 if has_header else 0)
+
+    # ======================================================================
+    #  断点续传检测                                                        <== 新增
+    # ======================================================================
+    skip_rows = 0
+    file_mode = 'w'          # 默认：覆盖写
+    write_header = True       # 默认：需要写表头
+
+    if resume and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+        try:
+            with open(output_file, 'r', encoding='utf-8') as f:
+                out_reader = csv.reader(f)
+                existing_header = next(out_reader)          # 读已有表头
+                completed_rows = sum(1 for _ in out_reader)  # 已完成数据行
+
+            # — 验证列数是否与当前配置匹配 —
+            with open(input_file, 'r', encoding='utf-8') as f:
+                first_input_row = next(csv.reader(f))
+            expected_total_cols = len(first_input_row) + len(new_headers)
+
+            if len(existing_header) != expected_total_cols:
+                print(f"  ⚠ 已有输出文件列数({len(existing_header)})"
+                      f"与当前配置期望({expected_total_cols})不匹配，配置可能已变更")
+                print(f"    将覆盖重新开始分析")
+                # 保持默认 file_mode='w', write_header=True, skip_rows=0
+
+            elif completed_rows >= total_data_rows:
+                print("=" * 60)
+                print(f"  ✓ 所有 {total_data_rows} 行已分析完毕，无需继续。")
+                print(f"    如需重新分析，请删除输出文件或设置 resume=False")
+                print("=" * 60)
+                return
+
+            elif completed_rows > 0:
+                skip_rows = completed_rows
+                file_mode = 'a'       # 追加模式
+                write_header = False   # 表头已存在
+
+            else:
+                # 输出文件仅有表头，无数据行
+                file_mode = 'a'
+                write_header = False
+
+        except Exception as e:
+            print(f"  ⚠ 读取已有输出文件失败({e})，将覆盖重新开始")
+            # 保持默认值
+
+    remaining_rows = total_data_rows - skip_rows                    # <== 新增
+
     # ---- 打印分析配置 ----
     print("=" * 60)
     print("情感分析配置:")
     print(f"  输入文件: {input_file}")
     print(f"  输出文件: {output_file}")
     print(f"  文本列号: {colnum}")
+    print(f"  总数据行: {total_data_rows}")                          # <== 新增
     print(f"  阿里云: {'✓' if Ali else '✗'}")
     print(f"  百度:   {'✓' if Baidu else '✗'}")
     if GenAI:
@@ -355,27 +387,59 @@ def StartAnalysis(input_file, output_file, colnum=1,
             print(f"    - {model_name} (列前缀: {label}, prompt: {prompt_type})")
     else:
         print(f"  GenAI:  ✗")
+    print(f"  逐行即时保存: ✓")
+    # ---- 断点续传状态 ----                                          <== 新增
+    if skip_rows > 0:
+        print(f"  断点续传: ✓ 已完成 {skip_rows}/{total_data_rows} 行，"
+              f"本次继续剩余 {remaining_rows} 行")
+    elif resume and file_mode == 'a':
+        print(f"  断点续传: ✓ 表头已存在，从第 1 行开始 (共 {total_data_rows} 行)")
+    else:
+        status = "已启用（未发现已有进度）" if resume else "未启用"
+        print(f"  断点续传: {status}")
     print("=" * 60)
 
+    # ==================================================================
+    #  主处理循环
+    # ==================================================================
     with open(input_file, 'r', encoding='utf-8') as infile, \
-         open(output_file, 'w', newline='', encoding='utf-8') as outfile:
+         open(output_file, file_mode, newline='', encoding='utf-8') as outfile:  # <== file_mode
 
         reader = csv.reader(infile)
         writer = csv.writer(outfile)
 
         # ---------- 处理表头 ----------
         if has_header:
-            original_header = next(reader)
-            writer.writerow(original_header + new_headers)
+            original_header = next(reader)              # 消耗输入文件表头行
+            if write_header:                            # <== 新增条件
+                writer.writerow(original_header + new_headers)
+                outfile.flush()
         else:
-            first_row = next(reader)
-            placeholder_header = [f'col_{i + 1}' for i in range(len(first_row))]
-            writer.writerow(placeholder_header + new_headers)
-            infile.seek(0)
-            reader = csv.reader(infile)
+            if write_header:                            # <== 新增条件
+                first_row = next(reader)
+                placeholder_header = [f'col_{i + 1}' for i in range(len(first_row))]
+                writer.writerow(placeholder_header + new_headers)
+                outfile.flush()
+                infile.seek(0)
+                reader = csv.reader(infile)
+            # 若 write_header=False (续传)，reader 从文件头开始，所有行都是数据
 
-        # ---------- 逐行处理 ----------
-        for row in tqdm(reader, desc="Processing"):
+        # ---------- 跳过已完成的行 ----------                        <== 新增
+        for i in range(skip_rows):
+            try:
+                next(reader)
+            except StopIteration:
+                print(f"警告：输入文件行数不足，跳过 {i} 行后已到末尾，无需继续")
+                return
+
+        if skip_rows > 0:
+            print(f"已跳过前 {skip_rows} 行已完成数据，开始继续分析...")
+
+        # ---------- 逐行处理剩余数据 ----------
+        pbar = tqdm(total=total_data_rows, initial=skip_rows,       # <== 修改为带总量的进度条
+                    desc="Processing")
+
+        for row in reader:                                          # <== 去掉原来的 tqdm 包装
             updated_row = list(row)
 
             try:
@@ -384,11 +448,15 @@ def StartAnalysis(input_file, output_file, colnum=1,
                 print(f"警告：第 {colnum} 列不存在，跳过此行: {row}")
                 updated_row.extend([None] * len(new_headers))
                 writer.writerow(updated_row)
+                outfile.flush()
+                pbar.update(1)                                      # <== 新增
                 continue
 
             if not text.strip():
                 updated_row.extend([None] * len(new_headers))
                 writer.writerow(updated_row)
+                outfile.flush()
+                pbar.update(1)                                      # <== 新增
                 continue
 
             # 阿里云分析
@@ -421,13 +489,16 @@ def StartAnalysis(input_file, output_file, colnum=1,
                     time.sleep(genai_sleep)
 
             writer.writerow(updated_row)
+            outfile.flush()
+            pbar.update(1)                                          # <== 新增
+
+        pbar.close()                                                # <== 新增
 
     print(f"\n分析完成！结果已保存到: {output_file}")
 
 
 if __name__ == "__main__":
 
-    # ========== 示例1: 同时使用 3 个 GenAI 模型 + 阿里 + 百度 ==========
     prompt_1 = """请判断下面文本的情感倾向。
     只能回答"积极""消极""中性"之一，以JSON返回：{{"sentiment":"你的判断"}}
     文本：{text}"""
@@ -445,64 +516,17 @@ if __name__ == "__main__":
     """
 
     StartAnalysis(
-        input_file='../TestFiles/TestFIle.csv',
-        output_file='../Results/TestResult_multi.csv',
+        input_file=r'C:\Users\x5058\MOFANGSync\SemAppPsy\Paper\Data\combined_weibo_all_216.csv',
+        output_file='../Results/Weibo216_multi.csv',
         colnum=3,
         Ali=True,
         Baidu=True,
         GenAI=True,
         emojitreat='replace',
         has_header=True,
-        genai_models=['gpt-4o-mini', 'gpt-5.4-mini', 'deepseek-v4-flash'],
-        genai_prompt={'gpt-4o-mini':prompt_1, 'gpt-5.4-mini':prompt_2, 'deepseek-v4-flash':prompt_3},
+        resume=True,                # <== 断点续传开关，默认开启
+        genai_models=['gpt-5.4-nano', 'qwen3.6-flash', 'deepseek-v4-pro', 'claude-sonnet-4-6'],
+        genai_prompt={'gpt-5.4-nano': prompt_2, 'qwen3.6-flash': prompt_2,
+                      'deepseek-v4-pro': prompt_2, 'claude-sonnet-4-6': prompt_2},
         genai_sleep=0.2
     )
-    # 输出列: ...原表列... | Ali列 | Baidu列 | GenAI_gpt4omini_Sentiment | GenAI_gpt4omini_Model | GenAI_claudesonnet420250514_Sentiment | GenAI_claudesonnet420250514_Model | GenAI_deepseekchat_Sentiment | GenAI_deepseekchat_Model
-
-    # ========== 示例2: 两个模型，各用不同 prompt ==========
-    # prompt_gpt = """请判断下面文本的情感倾向。
-    # 只能回答"积极""消极""中性"之一，以JSON返回：{{"sentiment":"你的判断"}}
-    # 文本：{text}"""
-    #
-    # prompt_claude = """Analyze the sentiment of the following Chinese text.
-    # Reply ONLY with JSON: {{"sentiment": "积极/消极/中性"}}
-    # Text: {text}"""
-    #
-    # StartAnalysis(
-    #     input_file='../TestFiles/TestFIle.csv',
-    #     output_file='../Results/TestResult_diff_prompt.csv',
-    #     colnum=3,
-    #     Ali=False,
-    #     Baidu=False,
-    #     GenAI=True,
-    #     emojitreat='replace',
-    #     has_header=True,
-    #     genai_models=['gpt-4o-mini', 'claude-sonnet-4-20250514'],
-    #     genai_prompt={
-    #         'gpt-4o-mini': prompt_gpt,
-    #         'claude-sonnet-4-20250514': prompt_claude
-    #     },
-    #     genai_sleep=0.5
-    # )
-
-    # ========== 示例3: 单个模型（向后兼容，和以前写法一样） ==========
-    # StartAnalysis(
-    #     input_file='../TestFiles/TestFIle.csv',
-    #     output_file='../Results/TestResult_single.csv',
-    #     colnum=3,
-    #     Ali=True,
-    #     Baidu=True,
-    #     GenAI=True,
-    #     emojitreat='replace',
-    #     has_header=True,
-    #     genai_models='gpt-4o-mini'
-    # )
-
-    # ========== 示例4: 单条测试多模型 ==========
-    # for m in ['gpt-4o-mini', 'deepseek-chat']:
-    #     result = SentimentAnalysisGenAI(
-    #         text='这家餐厅的服务态度真好，菜品也很美味！',
-    #         emojitreat='replace',
-    #         model=m
-    #     )
-    #     print(f"[{m}] {result}")
