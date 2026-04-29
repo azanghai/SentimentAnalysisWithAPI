@@ -175,35 +175,48 @@ def SentimentAnalysisGenAI(text, emojitreat,
 # ==================== 结果提取辅助函数 ====================
 def _extract_ali_result(resultAli):
     headers = ['AliSentiment', 'AliPositive_prob', 'AliNeutral_prob', 'AliNegative_prob', 'AliRequestId']
-    if 'Data' in resultAli:
-        dataAli = json.loads(resultAli['Data'])['result']
-        values = [dataAli['sentiment'], dataAli['positive_prob'], dataAli['neutral_prob'],
-                  dataAli['negative_prob'], resultAli['RequestId']]
-    else:
-        values = [json.dumps(resultAli), None, None, None, None]
+    try:                                                            # <== 新增 try
+        if 'Data' in resultAli:
+            data_parsed = json.loads(resultAli['Data'])
+            if 'result' in data_parsed:                             # <== 新增检查
+                dataAli = data_parsed['result']
+                values = [dataAli['sentiment'], dataAli['positive_prob'], dataAli['neutral_prob'],
+                          dataAli['negative_prob'], resultAli.get('RequestId')]
+            else:
+                # Data 存在但无 result（限流/异常响应等）              <== 新增分支
+                values = [f"AliError: {json.dumps(data_parsed, ensure_ascii=False)}",
+                          None, None, None, resultAli.get('RequestId')]
+        else:
+            values = [f"AliError: {json.dumps(resultAli, ensure_ascii=False)}",
+                      None, None, None, None]
+    except Exception as e:                                          # <== 新增兜底
+        values = [f"AliException: {str(e)}", None, None, None, None]
     return headers, values
-
-
 def _extract_baidu_result(resultBaidu):
     headers = ['BaiduSentiment', 'BaiduConfidence', 'BaiduPositive_prob', 'BaiduNegative_prob', 'BaiduLogid']
-    if 'items' in resultBaidu:
-        dataBaidu = resultBaidu['items'][0]
-        sentiment_map = {0: '消极', 1: '中性', 2: '积极'}
-        dataBaidu['sentiment'] = sentiment_map.get(dataBaidu['sentiment'], dataBaidu['sentiment'])
-        values = [dataBaidu['sentiment'], dataBaidu['confidence'], dataBaidu['positive_prob'],
-                  dataBaidu['negative_prob'], resultBaidu['log_id']]
-    else:
-        values = [json.dumps(resultBaidu), None, None, None, None]
+    try:                                                            # <== 新增 try
+        if 'items' in resultBaidu and len(resultBaidu['items']) > 0:  # <== 加 len 检查
+            dataBaidu = resultBaidu['items'][0]
+            sentiment_map = {0: '消极', 1: '中性', 2: '积极'}
+            sentiment_val = sentiment_map.get(dataBaidu.get('sentiment'), dataBaidu.get('sentiment'))
+            values = [sentiment_val, dataBaidu.get('confidence'), dataBaidu.get('positive_prob'),
+                      dataBaidu.get('negative_prob'), resultBaidu.get('log_id')]
+        else:
+            values = [f"BaiduError: {json.dumps(resultBaidu, ensure_ascii=False)}",
+                      None, None, None, resultBaidu.get('log_id')]
+    except Exception as e:                                          # <== 新增兜底
+        values = [f"BaiduException: {str(e)}", None, None, None, None]
     return headers, values
-
-
 def _extract_genai_result(resultGenAI, label):
     headers = [f'{label}_Sentiment', f'{label}_Model']
-    if resultGenAI.get("success"):
-        values = [resultGenAI['sentiment'], resultGenAI['model']]
-    else:
-        error_info = resultGenAI.get('error', '') + ' | ' + resultGenAI.get('raw_response', '')
-        values = [error_info, resultGenAI.get('model', '')]
+    try:                                                            # <== 新增 try
+        if resultGenAI.get("success"):
+            values = [resultGenAI['sentiment'], resultGenAI['model']]
+        else:
+            error_info = resultGenAI.get('error', '') + ' | ' + resultGenAI.get('raw_response', '')
+            values = [error_info, resultGenAI.get('model', '')]
+    except Exception as e:                                          # <== 新增兜底
+        values = [f"GenAIException: {str(e)}", '']
     return headers, values
 
 
@@ -436,10 +449,10 @@ def StartAnalysis(input_file, output_file, colnum=1,
             print(f"已跳过前 {skip_rows} 行已完成数据，开始继续分析...")
 
         # ---------- 逐行处理剩余数据 ----------
-        pbar = tqdm(total=total_data_rows, initial=skip_rows,       # <== 修改为带总量的进度条
+        pbar = tqdm(total=total_data_rows, initial=skip_rows,
                     desc="Processing")
 
-        for row in reader:                                          # <== 去掉原来的 tqdm 包装
+        for row in reader:
             updated_row = list(row)
 
             try:
@@ -449,50 +462,69 @@ def StartAnalysis(input_file, output_file, colnum=1,
                 updated_row.extend([None] * len(new_headers))
                 writer.writerow(updated_row)
                 outfile.flush()
-                pbar.update(1)                                      # <== 新增
+                pbar.update(1)
                 continue
 
             if not text.strip():
                 updated_row.extend([None] * len(new_headers))
                 writer.writerow(updated_row)
                 outfile.flush()
-                pbar.update(1)                                      # <== 新增
+                pbar.update(1)
                 continue
 
-            # 阿里云分析
+            # ============================================================
+            #  阿里云分析（带异常保护）                                   <== 修改
+            # ============================================================
             if Ali:
-                resultAli = SentimentAnalysisAli(text, emojitreat)
+                try:
+                    resultAli = SentimentAnalysisAli(text, emojitreat)
+                except Exception as e:
+                    resultAli = {'AliCallError': str(e)}
+                    print(f"\n  ⚠ 阿里云调用异常: {e}")
                 _, ali_values = _extract_ali_result(resultAli)
                 updated_row.extend(ali_values)
 
-            # 百度分析
+            # ============================================================
+            #  百度分析（带异常保护）                                     <== 修改
+            # ============================================================
             if Baidu:
-                resultBaidu = SentimentAnalysisBaidu(text, emojitreat)
+                try:
+                    resultBaidu = SentimentAnalysisBaidu(text, emojitreat)
+                except Exception as e:
+                    resultBaidu = {'BaiduCallError': str(e)}
+                    print(f"\n  ⚠ 百度调用异常: {e}")
                 _, baidu_values = _extract_baidu_result(resultBaidu)
                 updated_row.extend(baidu_values)
                 time.sleep(0.6)
 
-            # GenAI 分析 —— 逐个模型调用
+            # ============================================================
+            #  GenAI 分析（带异常保护）                                   <== 修改
+            # ============================================================
             if GenAI:
                 for model_name, label in model_labels:
-                    current_prompt = _resolve_prompt(genai_prompt, model_name)
-                    resultGenAI = SentimentAnalysisGenAI(
-                        text=text,
-                        emojitreat=emojitreat,
-                        model=model_name,
-                        prompt_template=current_prompt,
-                        api_key=genai_api_key,
-                        base_url=genai_base_url
-                    )
+                    try:
+                        current_prompt = _resolve_prompt(genai_prompt, model_name)
+                        resultGenAI = SentimentAnalysisGenAI(
+                            text=text,
+                            emojitreat=emojitreat,
+                            model=model_name,
+                            prompt_template=current_prompt,
+                            api_key=genai_api_key,
+                            base_url=genai_base_url
+                        )
+                    except Exception as e:
+                        resultGenAI = {'success': False, 'error': f'调用异常: {str(e)}',
+                                       'model': model_name}
+                        print(f"\n  ⚠ GenAI [{model_name}] 调用异常: {e}")
                     _, genai_values = _extract_genai_result(resultGenAI, label)
                     updated_row.extend(genai_values)
                     time.sleep(genai_sleep)
 
             writer.writerow(updated_row)
             outfile.flush()
-            pbar.update(1)                                          # <== 新增
+            pbar.update(1)
 
-        pbar.close()                                                # <== 新增
+        pbar.close()
 
     print(f"\n分析完成！结果已保存到: {output_file}")
 
