@@ -2,6 +2,7 @@ import json
 import os
 import csv
 import time
+import shutil
 import requests
 
 from tqdm import tqdm
@@ -175,27 +176,28 @@ def SentimentAnalysisGenAI(text, emojitreat,
 # ==================== 结果提取辅助函数 ====================
 def _extract_ali_result(resultAli):
     headers = ['AliSentiment', 'AliPositive_prob', 'AliNeutral_prob', 'AliNegative_prob', 'AliRequestId']
-    try:                                                            # <== 新增 try
+    try:
         if 'Data' in resultAli:
             data_parsed = json.loads(resultAli['Data'])
-            if 'result' in data_parsed:                             # <== 新增检查
+            if 'result' in data_parsed:
                 dataAli = data_parsed['result']
                 values = [dataAli['sentiment'], dataAli['positive_prob'], dataAli['neutral_prob'],
                           dataAli['negative_prob'], resultAli.get('RequestId')]
             else:
-                # Data 存在但无 result（限流/异常响应等）              <== 新增分支
                 values = [f"AliError: {json.dumps(data_parsed, ensure_ascii=False)}",
                           None, None, None, resultAli.get('RequestId')]
         else:
             values = [f"AliError: {json.dumps(resultAli, ensure_ascii=False)}",
                       None, None, None, None]
-    except Exception as e:                                          # <== 新增兜底
+    except Exception as e:
         values = [f"AliException: {str(e)}", None, None, None, None]
     return headers, values
+
+
 def _extract_baidu_result(resultBaidu):
     headers = ['BaiduSentiment', 'BaiduConfidence', 'BaiduPositive_prob', 'BaiduNegative_prob', 'BaiduLogid']
-    try:                                                            # <== 新增 try
-        if 'items' in resultBaidu and len(resultBaidu['items']) > 0:  # <== 加 len 检查
+    try:
+        if 'items' in resultBaidu and len(resultBaidu['items']) > 0:
             dataBaidu = resultBaidu['items'][0]
             sentiment_map = {0: '消极', 1: '中性', 2: '积极'}
             sentiment_val = sentiment_map.get(dataBaidu.get('sentiment'), dataBaidu.get('sentiment'))
@@ -204,18 +206,20 @@ def _extract_baidu_result(resultBaidu):
         else:
             values = [f"BaiduError: {json.dumps(resultBaidu, ensure_ascii=False)}",
                       None, None, None, resultBaidu.get('log_id')]
-    except Exception as e:                                          # <== 新增兜底
+    except Exception as e:
         values = [f"BaiduException: {str(e)}", None, None, None, None]
     return headers, values
+
+
 def _extract_genai_result(resultGenAI, label):
     headers = [f'{label}_Sentiment', f'{label}_Model']
-    try:                                                            # <== 新增 try
+    try:
         if resultGenAI.get("success"):
             values = [resultGenAI['sentiment'], resultGenAI['model']]
         else:
             error_info = resultGenAI.get('error', '') + ' | ' + resultGenAI.get('raw_response', '')
             values = [error_info, resultGenAI.get('model', '')]
-    except Exception as e:                                          # <== 新增兜底
+    except Exception as e:
         values = [f"GenAIException: {str(e)}", '']
     return headers, values
 
@@ -254,52 +258,89 @@ def _resolve_prompt(genai_prompt, model_name):
         return None
 
 
+# ==================== 平台结果有效性检查 (新增) ====================
+def _is_valid_ali(row, col_start, col_count=5):
+    """检查该行中阿里云结果是否有效（非空、非错误）"""
+    if col_start is None or col_start + col_count > len(row):
+        return False
+    val = str(row[col_start]).strip() if row[col_start] else ''
+    if not val:
+        return False
+    if 'Error' in val or 'Exception' in val:
+        return False
+    return True
+
+
+def _is_valid_baidu(row, col_start, col_count=5):
+    """检查该行中百度结果是否有效（非空、非错误）"""
+    if col_start is None or col_start + col_count > len(row):
+        return False
+    val = str(row[col_start]).strip() if row[col_start] else ''
+    if not val:
+        return False
+    if 'Error' in val or 'Exception' in val:
+        return False
+    return True
+
+
+def _is_valid_genai(row, col_start, col_count=2):
+    """检查该行中某个GenAI模型结果是否有效（情感值为三者之一）"""
+    if col_start is None or col_start + col_count > len(row):
+        return False
+    val = str(row[col_start]).strip() if row[col_start] else ''
+    return val in ('积极', '消极', '中性')
+
+
 # ==================== 主分析流程 ====================
 def StartAnalysis(input_file, output_file, colnum=1,
                   Ali=True, Baidu=True, GenAI=False,
                   emojitreat='replace',
                   has_header=True,
-                  resume=True,                                      # <== 新增参数
+                  resume=True,
                   genai_models='gpt-4o-mini',
                   genai_prompt=None,
                   genai_api_key=None,
                   genai_base_url=None,
                   genai_sleep=0.5):
     """
-        整体情感分析处理，在原表所有列的基础上追加分析结果列。
-        每处理完一行立即写入并刷盘；支持断点续传，中途中断后重新运行即可自动接续。
-        新增参数:
-        resume:  是否启用断点续传 (默认 True)
-                 - True:  若输出文件已存在，自动跳过已完成行，追加写入
-                 - False: 忽略已有输出文件，从头覆盖重新分析
-                 注意：续传要求分析配置（平台选择、模型列表等）与上次一致，
-                       若配置变更导致列数不匹配，会自动回退到从头开始。
-        参数:
-            input_file:     输入 CSV 文件路径
-            output_file:    输出 CSV 文件路径
-            colnum:         文本所在列号 (从1开始)
-            Ali:            是否使用阿里云
-            Baidu:          是否使用百度
-            GenAI:          是否使用 GenAI
-            emojitreat:     emoji 处理方式 ('replace' / 'delete')
-            has_header:     输入文件是否包含表头行 (True/False)
+    整体情感分析处理，支持平台级别断点续传。
 
-            genai_models:   GenAI 模型，支持三种写法:
-                              - 单个字符串:  'gpt-4o-mini'
-                              - 多个模型列表: ['gpt-4o-mini', 'claude-sonnet-4-20250514', 'deepseek-chat']
-                            （旧参数名 genai_model 仍兼容，见下方）
+    断点续传逻辑 (resume=True):
+      1. 读取已有输出文件的全部数据
+      2. 逐行检查每个平台的结果是否有效:
+         - 有效 → 保留已有结果，不重复调用API
+         - 无效/缺失/错误 → 仅重新调用该平台
+      3. 支持"列扩展"：已有文件只有 Ali+Baidu 列时，
+         自动补充 GenAI 列而不重跑 Ali+Baidu
+      4. 写入前创建 .bak 备份，成功后自动删除
 
-            genai_prompt:   GenAI prompt，支持三种写法:
-                              - None:  所有模型使用默认 prompt
-                              - str:   所有模型共用同一个自定义 prompt
-                              - dict:  按模型名指定不同 prompt
-                                       {'gpt-4o-mini': prompt_a, 'deepseek-chat': prompt_b}
-                                       未指定的模型使用默认 prompt
+    参数:
+        input_file:     输入 CSV 文件路径
+        output_file:    输出 CSV 文件路径
+        colnum:         文本所在列号 (从1开始)
+        Ali:            是否使用阿里云
+        Baidu:          是否使用百度
+        GenAI:          是否使用 GenAI
+        emojitreat:     emoji 处理方式 ('replace' / 'delete')
+        has_header:     输入文件是否包含表头行
 
-            genai_api_key:  API Key，默认使用 config.py 中的 AIHUBMIX_API_KEY
-            genai_base_url: API 地址，默认使用 config.py 中的 AIHUBMIX_BASE_URL
-            genai_sleep:    每次 GenAI 请求后的等待时间(秒)，防止速率限制
-        """
+        resume:         是否启用断点续传 (默认 True)
+                        - True: 平台级别续传，仅重试失败/缺失的平台
+                        - False: 忽略已有输出，从头开始
+
+        genai_models:   GenAI 模型，支持:
+                          - 单个字符串: 'gpt-4o-mini'
+                          - 列表: ['gpt-4o-mini', 'deepseek-chat']
+
+        genai_prompt:   GenAI prompt，支持:
+                          - None: 使用默认 prompt
+                          - str: 所有模型共用
+                          - dict: 按模型名指定
+
+        genai_api_key:  API Key
+        genai_base_url: API 地址
+        genai_sleep:    GenAI 请求间隔(秒)
+    """
 
     colnum = int(colnum)
 
@@ -330,59 +371,192 @@ def StartAnalysis(input_file, output_file, colnum=1,
             new_headers.extend([f'{label}_Sentiment', f'{label}_Model'])
 
     # ======================================================================
-    #  计算输入文件总数据行数（用 csv.reader 正确处理含换行的字段）        <== 新增
+    #  读取输入文件
     # ======================================================================
     with open(input_file, 'r', encoding='utf-8') as f:
-        total_input_lines = sum(1 for _ in csv.reader(f))
-    total_data_rows = total_input_lines - (1 if has_header else 0)
+        input_reader = csv.reader(f)
+        all_input_rows = list(input_reader)
+
+    if has_header:
+        original_header = all_input_rows[0]
+        input_data_rows = all_input_rows[1:]
+    else:
+        original_header = [f'col_{i + 1}' for i in range(len(all_input_rows[0]))]
+        input_data_rows = all_input_rows
+
+    total_data_rows = len(input_data_rows)
+    original_col_count = len(original_header)
+    expected_header = original_header + new_headers
+    expected_col_count = len(expected_header)
 
     # ======================================================================
-    #  断点续传检测                                                        <== 新增
+    #  计算各平台在输出行中的列位置
     # ======================================================================
-    skip_rows = 0
-    file_mode = 'w'          # 默认：覆盖写
-    write_header = True       # 默认：需要写表头
+    col_positions = {}  # key -> (start_col_index, col_count)
+    current_pos = original_col_count
+
+    if Ali:
+        col_positions['ali'] = (current_pos, 5)
+        current_pos += 5
+    if Baidu:
+        col_positions['baidu'] = (current_pos, 5)
+        current_pos += 5
+    if GenAI:
+        for model_name, label in model_labels:
+            col_positions[f'genai_{model_name}'] = (current_pos, 2)
+            current_pos += 2
+
+    # ======================================================================
+    #  断点续传：读取已有输出文件
+    # ======================================================================
+    existing_data = []       # 已有的输出数据行 (不含表头)
+    resume_mode = 'fresh'    # 'fresh' | 'exact' | 'expand'
+    backup_path = output_file + '.bak'
 
     if resume and os.path.exists(output_file) and os.path.getsize(output_file) > 0:
         try:
-            with open(output_file, 'r', encoding='utf-8') as f:
-                out_reader = csv.reader(f)
-                existing_header = next(out_reader)          # 读已有表头
-                completed_rows = sum(1 for _ in out_reader)  # 已完成数据行
+            # 如果存在 .bak 文件（上次崩溃遗留），进行智能合并
+            source_files = [output_file]
+            if os.path.exists(backup_path):
+                source_files.append(backup_path)
+                print(f"  ℹ 检测到备份文件 {backup_path}，将合并恢复数据")
 
-            # — 验证列数是否与当前配置匹配 —
-            with open(input_file, 'r', encoding='utf-8') as f:
-                first_input_row = next(csv.reader(f))
-            expected_total_cols = len(first_input_row) + len(new_headers)
+            # 读取所有源文件，取行数最多且列数兼容的
+            best_data = []
+            best_header = []
+            for src in source_files:
+                with open(src, 'r', encoding='utf-8') as f:
+                    reader = csv.reader(f)
+                    try:
+                        hdr = next(reader)
+                        rows = list(reader)
+                    except StopIteration:
+                        continue
+                    if len(rows) > len(best_data):
+                        best_data = rows
+                        best_header = hdr
+                    elif len(rows) == len(best_data) and len(hdr) >= len(best_header):
+                        best_data = rows
+                        best_header = hdr
 
-            if len(existing_header) != expected_total_cols:
-                print(f"  ⚠ 已有输出文件列数({len(existing_header)})"
-                      f"与当前配置期望({expected_total_cols})不匹配，配置可能已变更")
-                print(f"    将覆盖重新开始分析")
-                # 保持默认 file_mode='w', write_header=True, skip_rows=0
+            existing_header = best_header
+            existing_data = best_data
 
-            elif completed_rows >= total_data_rows:
-                print("=" * 60)
-                print(f"  ✓ 所有 {total_data_rows} 行已分析完毕，无需继续。")
-                print(f"    如需重新分析，请删除输出文件或设置 resume=False")
-                print("=" * 60)
-                return
+            # 判断列结构兼容性
+            existing_col_count = len(existing_header)
 
-            elif completed_rows > 0:
-                skip_rows = completed_rows
-                file_mode = 'a'       # 追加模式
-                write_header = False   # 表头已存在
+            if existing_col_count == expected_col_count and existing_header == expected_header:
+                # 完全匹配：平台级别续传
+                resume_mode = 'exact'
 
+            elif (existing_col_count < expected_col_count and
+                  existing_header == expected_header[:existing_col_count]):
+                # 已有文件是期望列的前缀（如之前没开 GenAI，现在加了）
+                resume_mode = 'expand'
+                # 补齐缺失列为空值
+                pad_count = expected_col_count - existing_col_count
+                existing_data = [row + [''] * pad_count for row in existing_data]
+
+            elif existing_col_count <= expected_col_count:
+                # 尝试按表头名称智能映射
+                # 检查已有表头的原始数据列是否匹配
+                if (existing_col_count >= original_col_count and
+                        existing_header[:original_col_count] == expected_header[:original_col_count]):
+                    resume_mode = 'expand'
+                    # 重建行数据：保留原始列 + 按新列结构映射已有平台数据
+                    mapped_data = []
+                    for row in existing_data:
+                        new_row = list(row[:original_col_count])  # 原始数据列
+                        # 对每个平台，尝试从已有行中提取
+                        for hdr_name in new_headers:
+                            if hdr_name in existing_header:
+                                idx = existing_header.index(hdr_name)
+                                new_row.append(row[idx] if idx < len(row) else '')
+                            else:
+                                new_row.append('')
+                        mapped_data.append(new_row)
+                    existing_data = mapped_data
+                else:
+                    print(f"  ⚠ 已有输出文件列结构不兼容，将从头开始")
+                    existing_data = []
+                    resume_mode = 'fresh'
             else:
-                # 输出文件仅有表头，无数据行
-                file_mode = 'a'
-                write_header = False
+                print(f"  ⚠ 已有输出文件列数({existing_col_count})"
+                      f"多于当前配置({expected_col_count})，将从头开始")
+                existing_data = []
+                resume_mode = 'fresh'
 
         except Exception as e:
-            print(f"  ⚠ 读取已有输出文件失败({e})，将覆盖重新开始")
-            # 保持默认值
+            print(f"  ⚠ 读取已有输出文件失败({e})，将从头开始")
+            existing_data = []
+            resume_mode = 'fresh'
 
-    remaining_rows = total_data_rows - skip_rows                    # <== 新增
+    # ======================================================================
+    #  统计需要处理的工作量
+    # ======================================================================
+    stats = {
+        'rows_fully_cached': 0,      # 所有平台都有效，无需API调用
+        'rows_partial_cached': 0,    # 部分平台有效，需要补充
+        'rows_fresh': 0,             # 无已有数据，需要全部调用
+        'ali_cached': 0, 'ali_todo': 0,
+        'baidu_cached': 0, 'baidu_todo': 0,
+        'genai_cached': 0, 'genai_todo': 0,
+    }
+
+    for i in range(total_data_rows):
+        if i < len(existing_data):
+            row = existing_data[i]
+            ali_ok = (not Ali) or _is_valid_ali(row, *col_positions['ali']) if Ali else True
+            baidu_ok = (not Baidu) or _is_valid_baidu(row, *col_positions['baidu']) if Baidu else True
+            genai_ok = True
+            if GenAI:
+                for model_name, label in model_labels:
+                    if not _is_valid_genai(row, *col_positions[f'genai_{model_name}']):
+                        genai_ok = False
+                        break
+
+            if ali_ok and baidu_ok and genai_ok:
+                stats['rows_fully_cached'] += 1
+            else:
+                stats['rows_partial_cached'] += 1
+
+            # 细粒度统计
+            if Ali:
+                if _is_valid_ali(row, *col_positions['ali']):
+                    stats['ali_cached'] += 1
+                else:
+                    stats['ali_todo'] += 1
+            if Baidu:
+                if _is_valid_baidu(row, *col_positions['baidu']):
+                    stats['baidu_cached'] += 1
+                else:
+                    stats['baidu_todo'] += 1
+            if GenAI:
+                for model_name, label in model_labels:
+                    if _is_valid_genai(row, *col_positions[f'genai_{model_name}']):
+                        stats['genai_cached'] += 1
+                    else:
+                        stats['genai_todo'] += 1
+        else:
+            stats['rows_fresh'] += 1
+            if Ali:
+                stats['ali_todo'] += 1
+            if Baidu:
+                stats['baidu_todo'] += 1
+            if GenAI:
+                stats['genai_todo'] += len(models_list)
+
+    # 检查是否所有都已完成
+    total_api_calls_needed = stats['ali_todo'] + stats['baidu_todo'] + stats['genai_todo']
+    if total_api_calls_needed == 0 and stats['rows_fresh'] == 0:
+        print("=" * 60)
+        print(f"  ✓ 所有 {total_data_rows} 行、所有平台结果均有效，无需继续。")
+        print(f"    如需强制重新分析，请设置 resume=False 或删除输出文件")
+        print("=" * 60)
+        # 清理遗留备份
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+        return
 
     # ---- 打印分析配置 ----
     print("=" * 60)
@@ -390,7 +564,7 @@ def StartAnalysis(input_file, output_file, colnum=1,
     print(f"  输入文件: {input_file}")
     print(f"  输出文件: {output_file}")
     print(f"  文本列号: {colnum}")
-    print(f"  总数据行: {total_data_rows}")                          # <== 新增
+    print(f"  总数据行: {total_data_rows}")
     print(f"  阿里云: {'✓' if Ali else '✗'}")
     print(f"  百度:   {'✓' if Baidu else '✗'}")
     if GenAI:
@@ -401,132 +575,177 @@ def StartAnalysis(input_file, output_file, colnum=1,
     else:
         print(f"  GenAI:  ✗")
     print(f"  逐行即时保存: ✓")
-    # ---- 断点续传状态 ----                                          <== 新增
-    if skip_rows > 0:
-        print(f"  断点续传: ✓ 已完成 {skip_rows}/{total_data_rows} 行，"
-              f"本次继续剩余 {remaining_rows} 行")
-    elif resume and file_mode == 'a':
-        print(f"  断点续传: ✓ 表头已存在，从第 1 行开始 (共 {total_data_rows} 行)")
-    else:
-        status = "已启用（未发现已有进度）" if resume else "未启用"
-        print(f"  断点续传: {status}")
+    print("-" * 60)
+    print("  断点续传 (平台级别):")
+    print(f"    续传模式: {resume_mode}")
+    print(f"    完全缓存行 (无需API): {stats['rows_fully_cached']}")
+    print(f"    部分缓存行 (需补充):  {stats['rows_partial_cached']}")
+    print(f"    全新行 (需全部调用):   {stats['rows_fresh']}")
+    if Ali:
+        print(f"    阿里云 - 已缓存: {stats['ali_cached']}, 待调用: {stats['ali_todo']}")
+    if Baidu:
+        print(f"    百度   - 已缓存: {stats['baidu_cached']}, 待调用: {stats['baidu_todo']}")
+    if GenAI:
+        print(f"    GenAI  - 已缓存: {stats['genai_cached']}, 待调用: {stats['genai_todo']}")
+    print(f"    总计需要API调用: {total_api_calls_needed} 次")
     print("=" * 60)
 
-    # ==================================================================
+    # ======================================================================
+    #  创建备份 (安全网)
+    # ======================================================================
+    if existing_data and os.path.exists(output_file):
+        shutil.copy2(output_file, backup_path)
+        print(f"  已创建备份: {backup_path}")
+
+    # ======================================================================
     #  主处理循环
-    # ==================================================================
-    with open(input_file, 'r', encoding='utf-8') as infile, \
-         open(output_file, file_mode, newline='', encoding='utf-8') as outfile:  # <== file_mode
+    # ======================================================================
+    api_calls_made = 0
+    rows_with_api_call = 0
 
-        reader = csv.reader(infile)
-        writer = csv.writer(outfile)
-
-        # ---------- 处理表头 ----------
-        if has_header:
-            original_header = next(reader)              # 消耗输入文件表头行
-            if write_header:                            # <== 新增条件
-                writer.writerow(original_header + new_headers)
-                outfile.flush()
-        else:
-            if write_header:                            # <== 新增条件
-                first_row = next(reader)
-                placeholder_header = [f'col_{i + 1}' for i in range(len(first_row))]
-                writer.writerow(placeholder_header + new_headers)
-                outfile.flush()
-                infile.seek(0)
-                reader = csv.reader(infile)
-            # 若 write_header=False (续传)，reader 从文件头开始，所有行都是数据
-
-        # ---------- 跳过已完成的行 ----------                        <== 新增
-        for i in range(skip_rows):
-            try:
-                next(reader)
-            except StopIteration:
-                print(f"警告：输入文件行数不足，跳过 {i} 行后已到末尾，无需继续")
-                return
-
-        if skip_rows > 0:
-            print(f"已跳过前 {skip_rows} 行已完成数据，开始继续分析...")
-
-        # ---------- 逐行处理剩余数据 ----------
-        pbar = tqdm(total=total_data_rows, initial=skip_rows,
-                    desc="Processing")
-
-        for row in reader:
-            updated_row = list(row)
-
-            try:
-                text = row[colnum - 1]
-            except IndexError:
-                print(f"警告：第 {colnum} 列不存在，跳过此行: {row}")
-                updated_row.extend([None] * len(new_headers))
-                writer.writerow(updated_row)
-                outfile.flush()
-                pbar.update(1)
-                continue
-
-            if not text.strip():
-                updated_row.extend([None] * len(new_headers))
-                writer.writerow(updated_row)
-                outfile.flush()
-                pbar.update(1)
-                continue
-
-            # ============================================================
-            #  阿里云分析（带异常保护）                                   <== 修改
-            # ============================================================
-            if Ali:
-                try:
-                    resultAli = SentimentAnalysisAli(text, emojitreat)
-                except Exception as e:
-                    resultAli = {'AliCallError': str(e)}
-                    print(f"\n  ⚠ 阿里云调用异常: {e}")
-                _, ali_values = _extract_ali_result(resultAli)
-                updated_row.extend(ali_values)
-
-            # ============================================================
-            #  百度分析（带异常保护）                                     <== 修改
-            # ============================================================
-            if Baidu:
-                try:
-                    resultBaidu = SentimentAnalysisBaidu(text, emojitreat)
-                except Exception as e:
-                    resultBaidu = {'BaiduCallError': str(e)}
-                    print(f"\n  ⚠ 百度调用异常: {e}")
-                _, baidu_values = _extract_baidu_result(resultBaidu)
-                updated_row.extend(baidu_values)
-                time.sleep(0.6)
-
-            # ============================================================
-            #  GenAI 分析（带异常保护）                                   <== 修改
-            # ============================================================
-            if GenAI:
-                for model_name, label in model_labels:
-                    try:
-                        current_prompt = _resolve_prompt(genai_prompt, model_name)
-                        resultGenAI = SentimentAnalysisGenAI(
-                            text=text,
-                            emojitreat=emojitreat,
-                            model=model_name,
-                            prompt_template=current_prompt,
-                            api_key=genai_api_key,
-                            base_url=genai_base_url
-                        )
-                    except Exception as e:
-                        resultGenAI = {'success': False, 'error': f'调用异常: {str(e)}',
-                                       'model': model_name}
-                        print(f"\n  ⚠ GenAI [{model_name}] 调用异常: {e}")
-                    _, genai_values = _extract_genai_result(resultGenAI, label)
-                    updated_row.extend(genai_values)
-                    time.sleep(genai_sleep)
-
-            writer.writerow(updated_row)
+    try:
+        with open(output_file, 'w', newline='', encoding='utf-8') as outfile:
+            writer = csv.writer(outfile)
+            writer.writerow(expected_header)
             outfile.flush()
-            pbar.update(1)
 
-        pbar.close()
+            pbar = tqdm(total=total_data_rows, desc="Processing")
 
-    print(f"\n分析完成！结果已保存到: {output_file}")
+            for i, input_row in enumerate(input_data_rows):
+                updated_row = list(input_row)
+
+                # 获取文本
+                try:
+                    text = input_row[colnum - 1]
+                except IndexError:
+                    print(f"\n  警告：第 {colnum} 列不存在，跳过第 {i + 1} 行")
+                    updated_row.extend([''] * len(new_headers))
+                    writer.writerow(updated_row)
+                    outfile.flush()
+                    pbar.update(1)
+                    continue
+
+                # 空文本处理
+                if not text.strip():
+                    updated_row.extend([''] * len(new_headers))
+                    writer.writerow(updated_row)
+                    outfile.flush()
+                    pbar.update(1)
+                    continue
+
+                # 获取已有数据 (如果有)
+                existing_row = existing_data[i] if i < len(existing_data) else None
+                row_made_api_call = False
+
+                # ============================================================
+                #  阿里云
+                # ============================================================
+                if Ali:
+                    ali_start, ali_count = col_positions['ali']
+                    if existing_row and _is_valid_ali(existing_row, ali_start, ali_count):
+                        # 使用缓存结果
+                        ali_values = existing_row[ali_start:ali_start + ali_count]
+                    else:
+                        # 需要调用API
+                        try:
+                            resultAli = SentimentAnalysisAli(text, emojitreat)
+                        except Exception as e:
+                            resultAli = {'AliCallError': str(e)}
+                            print(f"\n  ⚠ 阿里云调用异常(行{i + 1}): {e}")
+                        _, ali_values = _extract_ali_result(resultAli)
+                        api_calls_made += 1
+                        row_made_api_call = True
+                    updated_row.extend(ali_values)
+
+                # ============================================================
+                #  百度
+                # ============================================================
+                if Baidu:
+                    baidu_start, baidu_count = col_positions['baidu']
+                    if existing_row and _is_valid_baidu(existing_row, baidu_start, baidu_count):
+                        # 使用缓存结果
+                        baidu_values = existing_row[baidu_start:baidu_start + baidu_count]
+                    else:
+                        # 需要调用API
+                        try:
+                            resultBaidu = SentimentAnalysisBaidu(text, emojitreat)
+                        except Exception as e:
+                            resultBaidu = {'BaiduCallError': str(e)}
+                            print(f"\n  ⚠ 百度调用异常(行{i + 1}): {e}")
+                        _, baidu_values = _extract_baidu_result(resultBaidu)
+                        time.sleep(0.6)
+                        api_calls_made += 1
+                        row_made_api_call = True
+                    updated_row.extend(baidu_values)
+
+                # ============================================================
+                #  GenAI (逐模型检查)
+                # ============================================================
+                if GenAI:
+                    for model_name, label in model_labels:
+                        genai_start, genai_count = col_positions[f'genai_{model_name}']
+                        if existing_row and _is_valid_genai(existing_row, genai_start, genai_count):
+                            # 使用缓存结果
+                            genai_values = existing_row[genai_start:genai_start + genai_count]
+                        else:
+                            # 需要调用API
+                            try:
+                                current_prompt = _resolve_prompt(genai_prompt, model_name)
+                                resultGenAI = SentimentAnalysisGenAI(
+                                    text=text,
+                                    emojitreat=emojitreat,
+                                    model=model_name,
+                                    prompt_template=current_prompt,
+                                    api_key=genai_api_key,
+                                    base_url=genai_base_url
+                                )
+                            except Exception as e:
+                                resultGenAI = {'success': False,
+                                               'error': f'调用异常: {str(e)}',
+                                               'model': model_name}
+                                print(f"\n  ⚠ GenAI [{model_name}] 调用异常(行{i + 1}): {e}")
+                            _, genai_values = _extract_genai_result(resultGenAI, label)
+                            time.sleep(genai_sleep)
+                            api_calls_made += 1
+                            row_made_api_call = True
+                        updated_row.extend(genai_values)
+
+                # 写入该行
+                writer.writerow(updated_row)
+                outfile.flush()
+
+                if row_made_api_call:
+                    rows_with_api_call += 1
+
+                pbar.update(1)
+
+            pbar.close()
+
+    except KeyboardInterrupt:
+        print(f"\n\n  ⚠ 用户中断！已安全保存到第 {i} 行")
+        print(f"    备份文件保留: {backup_path}")
+        print(f"    下次运行将自动从中断处继续")
+        return
+    except Exception as e:
+        print(f"\n\n  ✗ 发生异常: {e}")
+        print(f"    已处理的数据已保存，备份文件保留: {backup_path}")
+        print(f"    下次运行将自动从中断处继续")
+        raise
+
+    # ======================================================================
+    #  完成：删除备份
+    # ======================================================================
+    if os.path.exists(backup_path):
+        os.remove(backup_path)
+        print(f"  已删除备份文件: {backup_path}")
+
+    print(f"\n{'=' * 60}")
+    print(f"分析完成！")
+    print(f"  结果文件: {output_file}")
+    print(f"  总行数: {total_data_rows}")
+    print(f"  本次API调用: {api_calls_made} 次 (涉及 {rows_with_api_call} 行)")
+    print(f"  缓存复用: {stats['rows_fully_cached']} 行完全复用")
+    print(f"{'=' * 60}")
 
 
 if __name__ == "__main__":
@@ -542,23 +761,23 @@ if __name__ == "__main__":
     待分析文本：{text}
     """
     prompt_3 = """
-    请判断下面文本的情感倾向。并给出相反的答案
-    只能回答"积极""消极""中性"之一，以JSON返回：{{"sentiment":"你的判断"}}
-    文本：{text}
-    """
+        请判断下面文本的情感倾向。并给出相反的答案
+        只能回答"积极""消极""中性"之一，以JSON返回：{{"sentiment":"你的判断"}}
+        文本：{text}
+        """
 
     StartAnalysis(
         input_file=r'C:\Users\x5058\MOFANGSync\SemAppPsy\Paper\Data\combined_weibo_all_216.csv',
-        output_file='../Results/Weibo216_multi.csv',
+        output_file='../Results/Weibo216_multi_3agent.csv',
         colnum=3,
         Ali=True,
         Baidu=True,
         GenAI=True,
         emojitreat='replace',
         has_header=True,
-        resume=True,                # <== 断点续传开关，默认开启
-        genai_models=['gpt-5.4-nano', 'qwen3.6-flash', 'deepseek-v4-pro', 'claude-sonnet-4-6'],
-        genai_prompt={'gpt-5.4-nano': prompt_2, 'qwen3.6-flash': prompt_2,
+        resume=True,
+        genai_models=[ 'qwen3.6-flash', 'deepseek-v4-pro', 'claude-sonnet-4-6'],
+        genai_prompt={ 'qwen3.6-flash': prompt_2,
                       'deepseek-v4-pro': prompt_2, 'claude-sonnet-4-6': prompt_2},
         genai_sleep=0.2
     )
